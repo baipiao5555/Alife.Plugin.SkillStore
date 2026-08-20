@@ -56,7 +56,7 @@ public sealed class SkillInfo
 }
 
 [Module("Skill 商店",
-    "从 GitHub、Gitee、GitLab、Codeberg/Gitea、魔搭等市场源浏览并下载 Skill 到本地 Skills 目录，支持魔搭 Skill 中心，下载后即可用 StudySkill 使用。",
+    "从 GitHub、Gitee、GitLab、Codeberg/Gitea、魔搭等市场源浏览、搜索并下载 Skill 到本地 Skills 目录，支持魔搭 Skill 中心，下载后即可用 StudySkill 使用。",
     editorUI: typeof(SkillStoreUI),
     defaultCategory: "猫猫的小工具")]
 public class SkillStoreModule(
@@ -89,7 +89,7 @@ public class SkillStoreModule(
     {
         XmlHandler xmlHandler = new(this)
         {
-            Description = "Skill 商店：从 GitHub、Gitee、GitLab、Codeberg/Gitea、魔搭等市场源浏览、下载并安装 Skill 到本地 Skills 目录。",
+            Description = "Skill 商店：从 GitHub、Gitee、GitLab、Codeberg/Gitea、魔搭等市场源浏览、搜索、下载并安装 Skill 到本地 Skills 目录。",
         };
         functionCaller.RegisterHandler(xmlHandler, cancellationToken: DestroyCancellationToken);
         return Task.CompletedTask;
@@ -193,6 +193,82 @@ public class SkillStoreModule(
         return Task.CompletedTask;
     }
 
+    [XmlFunction(FunctionMode.OneShot)]
+    [Description("按关键字搜索市场源中的 Skill（匹配名称或简介），不填 source 时搜索配置的全部市场源")]
+    public async Task SearchSkills(
+        [Description("搜索关键字，如 browser、写作、git")] string keyword,
+        [Description("要搜索的市场源，格式与列表/安装一致；不填则搜索配置的全部市场源")] string source = "")
+    {
+        try
+        {
+            string kw = (keyword ?? "").Trim();
+            if (kw.Length == 0)
+            {
+                interactor.Poke("喵，请先告诉我搜索关键字喵。");
+                return;
+            }
+
+            List<string> sources = string.IsNullOrWhiteSpace(source)
+                ? ParseConfiguredSources()
+                : new List<string> { source };
+            if (sources.Count == 0)
+            {
+                interactor.Poke("喵，还没有配置任何市场源，请先设置市场源再搜索。");
+                return;
+            }
+
+            var found = new List<(string Source, SkillInfo Skill)>();
+            var errors = new List<string>();
+            foreach (string src in sources)
+            {
+                try
+                {
+                    List<SkillInfo> matches = await SearchSkillsAsync(kw, src);
+                    foreach (SkillInfo info in matches)
+                        found.Add((src, info));
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{src}：{ex.Message}");
+                }
+            }
+
+            if (found.Count == 0)
+            {
+                if (errors.Count > 0)
+                    interactor.Poke($"喵，搜索「{kw}」失败：{string.Join("；", errors)}");
+                else
+                    interactor.Poke($"喵，没找到与「{kw}」相关的 Skill。");
+                return;
+            }
+
+            const int maxShow = 30;
+            var lines = new List<string>();
+            int shown = 0;
+            foreach ((string src, SkillInfo info) in found)
+            {
+                if (shown >= maxShow)
+                    break;
+                string shownName = string.IsNullOrWhiteSpace(info.DisplayName) ? info.Name : info.DisplayName;
+                string sourceTag = ShortSourceName(src);
+                lines.Add(string.IsNullOrWhiteSpace(info.Description)
+                    ? $"{shownName}（{sourceTag}）"
+                    : $"{shownName}（{sourceTag}）：{info.Description}");
+                shown++;
+            }
+
+            string summary = found.Count <= maxShow
+                ? $"喵，找到 {found.Count} 个与「{kw}」相关的 Skill：\n- " + string.Join("\n- ", lines)
+                : $"喵，找到 {found.Count} 个与「{kw}」相关的 Skill，先列出前 {maxShow} 个：\n- " + string.Join("\n- ", lines) +
+                  $"\n…其余 {found.Count - maxShow} 个可以用 ListMarketSkills 浏览，或直接说出名字让我安装。";
+            interactor.Poke(summary);
+        }
+        catch (Exception ex)
+        {
+            interactor.Poke($"喵，搜索失败：{ex.Message}");
+        }
+    }
+
     public static async Task<List<SkillInfo>> FetchSkills(string source)
     {
         SkillSource src = ParseSource(source);
@@ -219,6 +295,71 @@ public class SkillStoreModule(
             result.Add(new SkillInfo { Name = name, Description = description, Content = content, Url = repoUrl });
         }
         return result;
+    }
+
+    public static async Task<List<SkillInfo>> SearchSkillsAsync(string keyword, string source)
+    {
+        string kw = (keyword ?? "").Trim();
+
+        SkillSource src = ParseSource(source);
+        if (src.Provider == ProviderKind.ModelScopeSkills)
+        {
+            // 魔搭 Skill 中心接口支持服务端关键字搜索（Query 参数）
+            using var http = CreateHttp();
+            List<SkillInfo> page = await FetchModelScopeSkillListPage(http, 1, MarketplacePageSize, kw);
+            if (kw.Length == 0)
+                return page;
+
+            var matches = new List<SkillInfo>();
+            foreach (SkillInfo info in page)
+            {
+                if (MatchesKeyword(info, kw))
+                    matches.Add(info);
+            }
+            return matches;
+        }
+
+        List<SkillInfo> skills = await FetchSkills(source);
+        if (kw.Length == 0)
+            return skills;
+
+        var result = new List<SkillInfo>();
+        foreach (SkillInfo info in skills)
+        {
+            if (MatchesKeyword(info, kw))
+                result.Add(info);
+        }
+        return result;
+    }
+
+    private static bool MatchesKeyword(SkillInfo skill, string keyword)
+    {
+        if (skill.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase)) return true;
+        if (skill.DisplayName.Contains(keyword, StringComparison.OrdinalIgnoreCase)) return true;
+        if (skill.Description.Contains(keyword, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    private List<string> ParseConfiguredSources()
+    {
+        var result = new List<string>();
+        string cfg = Configuration?.Sources ?? "";
+        if (string.IsNullOrWhiteSpace(cfg))
+            return result;
+        foreach (string part in cfg.Split(','))
+        {
+            string s = part.Trim();
+            if (s.Length > 0)
+                result.Add(s);
+        }
+        return result;
+    }
+
+    private static string ShortSourceName(string source)
+    {
+        string s = (source ?? "").Trim().TrimEnd('/');
+        int scheme = s.IndexOf("://", StringComparison.Ordinal);
+        return scheme > 0 ? s.Substring(scheme + 3) : s;
     }
 
     public static string ExtractDescription(string skillMd)
@@ -710,7 +851,7 @@ public class SkillStoreModule(
         }
     }
 
-    private static async Task<List<SkillInfo>> FetchModelScopeSkillListPage(HttpClient http, int pageNumber, int pageSize)
+    private static async Task<List<SkillInfo>> FetchModelScopeSkillListPage(HttpClient http, int pageNumber, int pageSize, string? query = null)
     {
         string url = "https://modelscope.cn/api/v1/dolphin/skills";
         EnsureSafeHost(url);
@@ -719,7 +860,7 @@ public class SkillStoreModule(
         {
             PageSize = pageSize,
             PageNumber = pageNumber,
-            Query = "",
+            Query = query ?? "",
             Sort = "Default",
             Criterion = new object[0],
             WithTopCollection = false
