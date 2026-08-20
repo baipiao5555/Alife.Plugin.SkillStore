@@ -41,6 +41,9 @@ public sealed class SkillStoreUI : ModuleUIBase<SkillStoreModule, SkillStoreConf
     private string _translateNote = "";
     private int _marketPage;
     private bool _canLoadMore;
+    private string _searchKeyword = "";
+    private bool _searchActive;
+    private bool _showTranslationSettings;
 
     protected override void BuildRenderTree(RenderTreeBuilder b)
     {
@@ -144,6 +147,38 @@ public sealed class SkillStoreUI : ModuleUIBase<SkillStoreModule, SkillStoreConf
         b.CloseElement();
 
         b.OpenElement(i++, "div");
+        b.AddAttribute(i++, "style", "display:flex;gap:6px;align-items:center;margin-top:8px;");
+        b.OpenElement(i++, "input");
+        b.AddAttribute(i++, "type", "text");
+        b.AddAttribute(i++, "value", _searchKeyword);
+        b.AddAttribute(i++, "placeholder", "搜索关键字，如 browser / 写作 / git");
+        b.AddAttribute(i++, "style",
+            "flex:1;min-width:0;box-sizing:border-box;padding:6px 9px;border:1px solid #d9d9d9;border-radius:6px;font-size:12px;");
+        b.AddAttribute(i++, "onchange",
+            EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+            {
+                if (e.Value is string s)
+                    _searchKeyword = s;
+            }));
+        b.CloseElement();
+        AddButton(b, ref i, "搜索", SearchAsync);
+        b.CloseElement();
+
+        if (_searchActive)
+        {
+            b.OpenElement(i++, "div");
+            b.AddAttribute(i++, "style", "margin-top:6px;");
+            AddButton(b, ref i, "返回全部列表",
+                () =>
+                {
+                    _searchActive = false;
+                    _searchKeyword = "";
+                    return RefreshAsync();
+                });
+            b.CloseElement();
+        }
+
+        b.OpenElement(i++, "div");
         b.AddAttribute(i++, "style",
             "margin-top:6px;display:flex;align-items:center;gap:8px;");
         b.OpenElement(i++, "span");
@@ -163,35 +198,55 @@ public sealed class SkillStoreUI : ModuleUIBase<SkillStoreModule, SkillStoreConf
 
         SectionTitle(b, ref i, "翻译设置");
 
-        Label(b, ref i, "翻译服务");
-        b.OpenElement(i++, "select");
-        b.AddAttribute(i++, "style",
-            "width:100%;box-sizing:border-box;padding:6px 9px;border:1px solid #d9d9d9;border-radius:6px;font-size:13px;");
-        b.AddAttribute(i++, "onchange",
-            EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        b.OpenElement(i++, "div");
+        b.AddAttribute(i++, "style", "display:flex;align-items:center;gap:8px;");
+        b.OpenElement(i++, "span");
+        b.AddAttribute(i++, "style", "font-size:12px;font-weight:600;");
+        b.AddContent(i++, "显示翻译配置");
+        b.CloseElement();
+        b.OpenComponent<Switch>(i++);
+        b.AddAttribute(i++, "Checked", _showTranslationSettings);
+        b.AddAttribute(i++, "CheckedChanged",
+            EventCallback.Factory.Create<bool>(this, v =>
             {
-                if (e.Value is string v && v.Length > 0)
-                    Configuration.TranslationProvider = v;
+                _showTranslationSettings = v;
+                _ = InvokeAsync(StateHasChanged);
             }));
-
-        foreach (var p in TranslationProviders)
-        {
-            b.OpenElement(i++, "option");
-            b.AddAttribute(i++, "value", p.Value);
-            b.AddContent(i++, p.Label);
-            b.CloseElement();
-        }
-
+        b.CloseComponent();
         b.CloseElement();
 
-        AddInput(b, ref i, "翻译 API Key（百度 appid / 有道 appKey / DeepL key）",
-            Configuration.TranslationApiKey, v => Configuration.TranslationApiKey = v);
-        AddInput(b, ref i, "翻译 API Secret（百度 secret / 有道 appSecret）",
-            Configuration.TranslationApiSecret, v => Configuration.TranslationApiSecret = v);
-        AddInput(b, ref i, "自定义翻译接口（{text} 为占位符）",
-            Configuration.TranslationApi, v => Configuration.TranslationApi = v);
-        AddInput(b, ref i, "自定义翻译结果字段（JSON 点号路径）",
-            Configuration.TranslationResultPath, v => Configuration.TranslationResultPath = v);
+        if (_showTranslationSettings)
+        {
+            Label(b, ref i, "翻译服务");
+            b.OpenElement(i++, "select");
+            b.AddAttribute(i++, "style",
+                "width:100%;box-sizing:border-box;padding:6px 9px;border:1px solid #d9d9d9;border-radius:6px;font-size:13px;");
+            b.AddAttribute(i++, "onchange",
+                EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+                {
+                    if (e.Value is string v && v.Length > 0)
+                        Configuration.TranslationProvider = v;
+                }));
+
+            foreach (var p in TranslationProviders)
+            {
+                b.OpenElement(i++, "option");
+                b.AddAttribute(i++, "value", p.Value);
+                b.AddContent(i++, p.Label);
+                b.CloseElement();
+            }
+
+            b.CloseElement();
+
+            AddInput(b, ref i, "翻译 API Key（百度 appid / 有道 appKey / DeepL key）",
+                Configuration.TranslationApiKey, v => Configuration.TranslationApiKey = v);
+            AddInput(b, ref i, "翻译 API Secret（百度 secret / 有道 appSecret）",
+                Configuration.TranslationApiSecret, v => Configuration.TranslationApiSecret = v);
+            AddInput(b, ref i, "自定义翻译接口（{text} 为占位符）",
+                Configuration.TranslationApi, v => Configuration.TranslationApi = v);
+            AddInput(b, ref i, "自定义翻译结果字段（JSON 点号路径）",
+                Configuration.TranslationResultPath, v => Configuration.TranslationResultPath = v);
+        }
 
         if (_loading)
         {
@@ -307,7 +362,7 @@ public sealed class SkillStoreUI : ModuleUIBase<SkillStoreModule, SkillStoreConf
             b.CloseElement();
         }
 
-        if (_canLoadMore)
+        if (!_searchActive && _canLoadMore)
         {
             b.OpenElement(i++, "div");
             b.AddAttribute(i++, "style", "margin-top:6px;");
@@ -353,6 +408,7 @@ public sealed class SkillStoreUI : ModuleUIBase<SkillStoreModule, SkillStoreConf
         _marketPage = 1;
         _canLoadMore = false;
         _skills.Clear();
+        _searchActive = false;
         await InvokeAsync(StateHasChanged);
 
         try
@@ -395,35 +451,7 @@ public sealed class SkillStoreUI : ModuleUIBase<SkillStoreModule, SkillStoreConf
             }
 
             if (_translate)
-            {
-                int translated = 0;
-                int failed = 0;
-                int skipped = 0;
-                foreach (MarketSkill skill in _skills)
-                {
-                    if (string.IsNullOrWhiteSpace(skill.Description))
-                        continue;
-                    if (SkillStoreModule.IsMostlyChinese(skill.Description))
-                    {
-                        skipped++;
-                        continue;
-                    }
-                    try
-                    {
-                        string before = skill.Description;
-                        skill.Description = await SkillStoreModule.TranslateTextAsync(skill.Description, Configuration);
-                        if (string.Equals(skill.Description, before, StringComparison.Ordinal))
-                            failed++;
-                        else
-                            translated++;
-                    }
-                    catch
-                    {
-                        failed++;
-                    }
-                }
-                _translateNote = $"翻译：成功 {translated}，失败 {failed}，已是中文跳过 {skipped}";
-            }
+                await TranslateDescriptionsAsync();
 
             if (_skills.Count > 0)
             {
@@ -456,6 +484,131 @@ public sealed class SkillStoreUI : ModuleUIBase<SkillStoreModule, SkillStoreConf
             _loading = false;
             await InvokeAsync(StateHasChanged);
         }
+    }
+
+    private async Task SearchAsync()
+    {
+        if (_loading || Configuration == null)
+            return;
+
+        string keyword = (_searchKeyword ?? "").Trim();
+        if (keyword.Length == 0)
+        {
+            _status = "请先输入要搜索的关键字。";
+            _statusType = "warn";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        _loading = true;
+        _status = "";
+        _statusType = "";
+        _translateNote = "";
+        _marketPage = 1;
+        _canLoadMore = false;
+        _skills.Clear();
+        _searchActive = true;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            List<string> sources = ParseSources(Configuration.Sources);
+            if (sources.Count == 0)
+            {
+                _status = "请先填写至少一个市场源。GitHub 用 owner/repo；魔搭中心用 https://modelscope.cn/skills。";
+                _statusType = "err";
+                return;
+            }
+
+            var errors = new List<string>();
+            foreach (string source in sources)
+            {
+                try
+                {
+                    List<SkillInfo> matches = await SkillStoreModule.SearchSkillsAsync(keyword, source);
+                    foreach (SkillInfo info in matches)
+                        _skills.Add(new MarketSkill
+                        {
+                            Source = source,
+                            Name = info.Name,
+                            DisplayName = info.DisplayName,
+                            Path = info.Path,
+                            Description = info.Description,
+                            Content = info.Content,
+                            Url = info.Url
+                        });
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{source}：{ex.Message}");
+                }
+            }
+
+            if (_translate)
+                await TranslateDescriptionsAsync();
+
+            if (_skills.Count > 0)
+            {
+                _status = $"搜索「{keyword}」找到 {_skills.Count} 个 Skill。";
+                _statusType = errors.Count > 0 ? "warn" : "ok";
+                if (errors.Count > 0)
+                    _status += "\n部分源失败：" + string.Join("；", errors);
+            }
+            else if (errors.Count > 0)
+            {
+                _status = "搜索失败：\n" + string.Join("\n", errors);
+                _statusType = "err";
+            }
+            else
+            {
+                _status = $"没有找到与「{keyword}」相关的 Skill，换个关键字试试。";
+                _statusType = "ok";
+            }
+
+            if (!string.IsNullOrEmpty(_translateNote))
+                _status = _status + "\n" + _translateNote;
+        }
+        catch (Exception ex)
+        {
+            _status = $"搜索失败：{ex.Message}";
+            _statusType = "err";
+        }
+        finally
+        {
+            _loading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task TranslateDescriptionsAsync()
+    {
+        int translated = 0;
+        int failed = 0;
+        int skipped = 0;
+        foreach (MarketSkill skill in _skills)
+        {
+            if (string.IsNullOrWhiteSpace(skill.Description))
+                continue;
+            if (SkillStoreModule.IsMostlyChinese(skill.Description))
+            {
+                skipped++;
+                continue;
+            }
+            try
+            {
+                string before = skill.Description;
+                skill.Description = await SkillStoreModule.TranslateTextAsync(skill.Description, Configuration);
+                if (string.Equals(skill.Description, before, StringComparison.Ordinal))
+                    failed++;
+                else
+                    translated++;
+            }
+            catch
+            {
+                failed++;
+            }
+        }
+        _translateNote = $"翻译：成功 {translated}，失败 {failed}，已是中文跳过 {skipped}";
     }
 
     private async Task InstallAsync(MarketSkill skill)
